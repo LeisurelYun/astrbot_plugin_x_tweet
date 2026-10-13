@@ -36,6 +36,6 @@ help: |
     /xt 搜索 <关键词> —— 按关键词检索最新推文；支持 from:账号 / -排除词 / min_faves:N 语法
     /xt 帮助 / /xt 搜索（无参） —— 查看搜索语法说明图片
     /xt 清理          —— 清理本地缓存文件（仅管理员）
-version: v1.13.1
+version: v1.14.0
 author: Leisurelyun
 astrbot_version: ">=4.16"

@@ -6,7 +6,7 @@ astrbot_plugin_x_tweet —— 媒体下载层
 以及缓存文件的落盘与清理。依赖 x_tweet_core，不依赖插件主体。
 
 作者：Leisurelyun
-版本：v1.13.1
+版本：v1.14.0
 """
 
 from __future__ import annotations

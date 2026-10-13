@@ -29,7 +29,7 @@ astrbot_plugin_x_tweet —— AstrBot 插件（入口）
     * 译文优先取 FxTwitter 自带的 ?lang= 结果（免费、无密钥），拿不到才调用大模型。
 
 作者：Leisurelyun
-版本：v1.13.1
+版本：v1.14.0
 """
 
 from __future__ import annotations
@@ -300,6 +300,11 @@ class XTweetPlugin(Star):
         self.parse_source_order: list[str] = order or list(DEFAULT_PARSE_SOURCE_ORDER)
 
         # ------------------------- 缓存目录 ------------------------- #
+        # 关于 cache_dir 允许自定义路径的说明：
+        # 默认缓存到 AstrBot 规范的插件数据目录 data/plugin_data/<插件名>/cache，
+        # 这是合规的默认行为；此处仍开放自定义，是考虑到部分用户的磁盘空间不足
+        # （例如 C 盘紧张、需要把缓存挪到大容量数据盘），属于用户显式配置，
+        # 插件不因此读取或写入任何与该插件无关的位置。
         # 自定义目录可能非法（盘符不存在 / 无写权限 / 被写成文件）：不能让 mkdir 抛出
         # 异常把插件顶进「加载失败」，失败时回落到默认目录并继续工作。
         default_cache_dir = get_default_cache_dir()
@@ -3740,7 +3745,8 @@ class XTweetPlugin(Star):
 # 兼容入口：部分旧版本通过 register 装饰器或模块级类发现插件
 # --------------------------------------------------------------------------- #
 
-# AstrBot 通过扫描模块中的 Star 子类来加载插件，因此无需额外注册代码。
-# 这里仅确保 logger 在模块级别被引用，避免静态检查误报未使用。
-# MJ
-_ = logging.getLogger(PLUGIN_NAME)
+# AstrBot 通过扫描模块中的 Star 子类来加载插件，无需额外注册代码。
+# 日志统一走 `from astrbot.api import logger`（在 x_tweet_core.py 里导入，经
+# 星号导入共享给其余模块），不使用 Python 内置日志模块——这是 AstrBot
+# 插件商店的硬性要求，内置 logger 的默认配置（级别、格式、handler）也会脱离
+# AstrBot 的日志体系。

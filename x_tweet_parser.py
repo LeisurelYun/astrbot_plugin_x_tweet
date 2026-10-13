@@ -7,7 +7,7 @@ astrbot_plugin_x_tweet —— 解析层
 依赖 x_tweet_core 中的常量与数据结构，不依赖插件主体，可单独实例化测试。
 
 作者：Leisurelyun
-版本：v1.13.1
+版本：v1.14.0
 """
 
 from __future__ import annotations

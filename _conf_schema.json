@@ -520,7 +520,7 @@
     "cache_dir": {
         "description": "缓存目录",
         "type": "text",
-        "hint": "留空即用 AstrBot 规范位置 data/plugin_data/astrbot_plugin_x_tweet/cache",
+        "hint": "留空即用 AstrBot 规范位置 data/plugin_data/astrbot_plugin_x_tweet/cache（默认合规）。开放自定义是考虑到部分用户磁盘空间不足、需要把缓存挪到数据盘，属用户显式配置；目录不可用时会自动回落到默认位置",
         "default": ""
     },
     "cache_max_files": {

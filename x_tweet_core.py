@@ -7,7 +7,7 @@ astrbot_plugin_x_tweet —— 公共基础层
 供 x_tweet_parser / x_tweet_media / main 通过 `from .x_tweet_core import *` 复用。
 
 作者：Leisurelyun
-版本：v1.13.1
+版本：v1.14.0
 """
 
 from __future__ import annotations
@@ -17,7 +17,6 @@ import contextvars
 import hashlib
 import html
 import json
-import logging
 import math
 import os
 import re
