@@ -56,7 +56,7 @@ AstrBot 插件：自动解析 **X / Twitter** 链接与个人主页，并注册 
 支持链接形式：`x.com`、`twitter.com`、`mobile.twitter.com`、`/i/status/`、`/statuses/`、`nitter.*`、
 `fxtwitter.com`、`vxtwitter.com`、`fixupx.com`，以及 `t.co` 短链。链接后的 `?s=20` 等参数会被剔除。
 
-## 配置项（`_conf_schema.json`，56 项）
+## 配置项（`_conf_schema.json`，57 项）
 
 基础与解析源：
 
@@ -187,7 +187,7 @@ AstrBot 插件：自动解析 **X / Twitter** 链接与个人主页，并注册 
 | `x_tweet_core.py`                        | 常量、正则、纯工具函数、`TweetData` / `ProfileData`、卡片模板 |
 | `x_tweet_parser.py`                      | `XTweetParser`（多源解析）与 `Translator`（大模型翻译）       |
 | `x_tweet_media.py`                       | `MediaDownloader`：图片 / 视频下载、yt-dlp 调用、缓存清理     |
-| `_conf_schema.json`                      | 面板配置项定义（56 项）                                       |
+| `_conf_schema.json`                      | 面板配置项定义（57 项）                                       |
 | `metadata.yaml`                          | 插件元信息（名称、版本、帮助文本）                            |
 | `assets/search_help.png`                 | `/xt 搜索` 语法说明图片（静态资源）                           |
 | `requirements.txt`                       | 依赖：`httpx`、`beautifulsoup4`                               |
