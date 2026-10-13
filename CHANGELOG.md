@@ -30,9 +30,9 @@
 
 ### 维护
 
-- 遵循 AstrBot 插件商店审查意见：移除 Python 内置 `logging` 的残留——`x_tweet_core.py`
-  的未使用导入 `import logging` 与 `main.py` 末尾的 `_ = logging.getLogger(PLUGIN_NAME)`
-  死语句。日志统一走 `from astrbot.api import logger`，其余不变。
+- 遵循 AstrBot 插件商店审查意见：移除 Python 内置日志模块的残留（`x_tweet_core.py`
+  里未使用的导入、`main.py` 末尾取日志器的死语句）。日志统一走
+  `from astrbot.api import logger`，其余不变。
 - 在 `cache_dir` 的读取处与配置项说明里补充注释：默认缓存到 AstrBot 规范的
   `data/plugin_data` 下；开放自定义路径是考虑到部分用户磁盘空间不足，
   属用户显式配置，不在本版改变该行为。
