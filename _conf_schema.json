@@ -1,0 +1,548 @@
+{
+    "enabled": {
+        "description": "启用自动解析",
+        "type": "bool",
+        "hint": "关闭后群内发送推文链接将不再自动解析，LLM 工具 parse_x_tweet 仍然可用",
+        "default": true
+    },
+    "proxy": {
+        "description": "代理地址",
+        "type": "text",
+        "hint": "例如 http://127.0.0.1:7890。留空则自动读取环境变量 HTTPS_PROXY / HTTP_PROXY / ALL_PROXY",
+        "default": ""
+    },
+    "parse_source_order": {
+        "description": "解析源优先级顺序",
+        "type": "text",
+        "hint": "按顺序尝试，先成功者即采用。可填 fxtwitter / mirror / syndication / oembed（逗号分隔）。想要完整的点赞转发浏览数据就用 fxtwitter 打头；未列出的源会自动补到末尾，留空即用默认",
+        "default": "fxtwitter, mirror, syndication, oembed"
+    },
+    "enable_mirror_sources": {
+        "description": "启用镜像实例轮询",
+        "type": "bool",
+        "hint": "FxTwitter 主站整体故障时的第二级保障：按下方列表顺序轮询镜像实例，任一成功即返回。列表为空时不会发出任何镜像请求",
+        "default": true
+    },
+    "mirror_fx_instances": {
+        "description": "镜像实例列表",
+        "type": "list",
+        "hint": "镜像 API 地址，一行一个（如 https://api.vxtwitter.com）。同时兼容 FxTwitter 同构与 vx 系两种格式；公共镜像不稳定（会 403 或 TLS 断开），请填自己验证可用的",
+        "default": []
+    },
+    "send_images": {
+        "description": "发送推文图片",
+        "type": "bool",
+        "default": true
+    },
+    "send_videos": {
+        "description": "发送推文视频",
+        "type": "bool",
+        "hint": "视频需要下载到本地后上传，速度较慢；关闭后只发送视频链接",
+        "default": true
+    },
+    "image_size": {
+        "description": "图片尺寸",
+        "type": "string",
+        "options": [
+            "orig",
+            "large",
+            "medium",
+            "small"
+        ],
+        "labels": [
+            "原图（最大）",
+            "大图 2048px",
+            "中图 1200px（推荐）",
+            "小图 680px"
+        ],
+        "hint": "通过 pbs.twimg.com 的 ?name= 参数按需取图，档位越小下载越快越省流量",
+        "default": "medium"
+    },
+    "max_images": {
+        "description": "单条推文最多发几张图",
+        "type": "int",
+        "hint": "超出部分只发送链接",
+        "slider": {
+            "min": 1,
+            "max": 4,
+            "step": 1
+        },
+        "default": 4
+    },
+    "max_image_size": {
+        "description": "单张图片大小上限（MB）",
+        "type": "int",
+        "hint": "超过上限时降级为发送图片原链接",
+        "slider": {
+            "min": 1,
+            "max": 50,
+            "step": 1
+        },
+        "default": 10
+    },
+    "max_video_size": {
+        "description": "视频大小上限（MB）",
+        "type": "int",
+        "hint": "超过上限时不下载，直接发送视频原链接",
+        "slider": {
+            "min": 5,
+            "max": 500,
+            "step": 5
+        },
+        "default": 50
+    },
+    "yt_dlp_path": {
+        "description": "yt-dlp 路径",
+        "type": "text",
+        "hint": "视频无直链时用它下载。留空自动从 PATH 查找；也可填 python 走 python -m yt_dlp",
+        "default": ""
+    },
+    "cookie_file": {
+        "description": "yt-dlp cookies 文件",
+        "type": "text",
+        "hint": "选填。视频下载频繁失败时可导出浏览器 cookies.txt 并填绝对路径",
+        "default": ""
+    },
+    "download_timeout": {
+        "description": "视频下载超时（秒）",
+        "type": "int",
+        "slider": {
+            "min": 30,
+            "max": 600,
+            "step": 30
+        },
+        "default": 180
+    },
+    "text_content_mode": {
+        "description": "正文展示方式",
+        "type": "string",
+        "options": [
+            "both",
+            "original",
+            "translation"
+        ],
+        "labels": [
+            "原文 + 译文",
+            "只发原文",
+            "只发译文"
+        ],
+        "hint": "译文与原文一起发会让消息变长，可只保留一种。「只发译文」但没有译文时会自动退回原文",
+        "default": "both"
+    },
+    "translate_mode": {
+        "description": "翻译方式",
+        "type": "string",
+        "options": [
+            "off",
+            "auto",
+            "fxtwitter",
+            "llm"
+        ],
+        "labels": [
+            "关闭翻译",
+            "自动（先免费后大模型）",
+            "只用 FxTwitter 免费翻译",
+            "只用大模型翻译"
+        ],
+        "hint": "FxTwitter v2 自带翻译由 Grok 提供，免费、无需密钥、支持 25 种语言，优先用它",
+        "default": "auto"
+    },
+    "translate_target_lang": {
+        "description": "翻译目标语言",
+        "type": "text",
+        "hint": "如 zh-cn（简体）、zh-tw、en、ja、ko 等，也可写「中文」「日语」。临时切换用 /xt 翻译 <语言>",
+        "default": "zh-cn"
+    },
+    "translate_provider_id": {
+        "description": "回退翻译用的大模型",
+        "type": "string",
+        "_special": "select_provider",
+        "hint": "FxTwitter 免费翻译不可用时的回退模型。留空 = 自动用第一个可用的对话模型。推荐专用翻译小模型（如 openai/Hy-MT2-30B-A3B）",
+        "default": ""
+    },
+    "translate_timeout": {
+        "description": "大模型翻译超时（秒）",
+        "type": "int",
+        "hint": "超时则放弃翻译，不影响推文本体发送",
+        "slider": {
+            "min": 5,
+            "max": 120,
+            "step": 5
+        },
+        "default": 30
+    },
+    "translate_llm_fallback": {
+        "description": "允许回退到大模型翻译",
+        "type": "bool",
+        "hint": "关闭后 auto 模式等价于只用 FxTwitter 免费翻译",
+        "default": true
+    },
+    "translate_retry": {
+        "description": "免费译文缺失时的重试次数",
+        "type": "int",
+        "hint": "FxTwitter 自带译文是间歇性的（同一条推文有时给有时不给）。先重试几次把免费译文拿到手，仍拿不到才回退大模型，省额度。0 = 不重试",
+        "slider": {
+            "min": 0,
+            "max": 3,
+            "step": 1
+        },
+        "default": 2
+    },
+    "translate_llm_min_chars": {
+        "description": "短文本不调用大模型的阈值",
+        "type": "int",
+        "hint": "去掉 @提及、链接、表情后有效字符少于该值就不调用大模型（如「@某人 ❤️」这类）。0 = 不限制",
+        "slider": {
+            "min": 0,
+            "max": 50,
+            "step": 1
+        },
+        "default": 4
+    },
+    "tweet_delivery": {
+        "description": "推文的发送方式",
+        "type": "string",
+        "options": [
+            "media",
+            "card"
+        ],
+        "labels": [
+            "文字 + 媒体混排（默认）",
+            "X 风格卡片（媒体另发）"
+        ],
+        "hint": "media：正文与图片视频混排成一条消息。card：渲染成 X 风格卡片图片，卡片不内嵌媒体——图片按顺序进一条合并转发，视频单独发；引用主贴不再单独发（已渲染在卡片里）",
+        "default": "media"
+    },
+    "card_theme": {
+        "description": "卡片主题",
+        "type": "string",
+        "options": [
+            "auto",
+            "light",
+            "dark"
+        ],
+        "labels": [
+            "自动（按下方时段切换）",
+            "浅色（白天）",
+            "深色（黑夜）"
+        ],
+        "hint": "X 风格卡片的配色。选「自动」时按下面两个小时数切换深色 / 浅色",
+        "default": "auto"
+    },
+    "card_dark_start_hour": {
+        "description": "自动模式下几点开始用深色",
+        "type": "int",
+        "hint": "0-23 小时。默认 19 点之后用深色主题",
+        "slider": {
+            "min": 0,
+            "max": 23,
+            "step": 1
+        },
+        "default": 19
+    },
+    "card_dark_end_hour": {
+        "description": "自动模式下几点恢复浅色",
+        "type": "int",
+        "hint": "0-23 小时。默认次日 7 点起恢复浅色（起始小时大于结束小时表示跨夜，如 19 → 7）",
+        "slider": {
+            "min": 0,
+            "max": 23,
+            "step": 1
+        },
+        "default": 7
+    },
+    "thread_split": {
+        "description": "引用 / 回复的主贴单独发一条",
+        "type": "bool",
+        "hint": "开启后主贴会二次解析并单独发一条（带译文与媒体）。card 交付模式下主贴不再单独发（引用信息在卡片里）",
+        "default": true
+    },
+    "thread_chain_depth": {
+        "description": "楼中楼最多解析几层",
+        "type": "int",
+        "hint": "一条推文引用 / 回复另一条时顺着往上找，最多几层（含你发的链接本身）。1 = 只解析这一条",
+        "slider": {
+            "min": 1,
+            "max": 10,
+            "step": 1
+        },
+        "default": 4
+    },
+    "thread_delivery": {
+        "description": "楼中楼的发送方式",
+        "type": "string",
+        "options": [
+            "forward",
+            "bubble",
+            "card"
+        ],
+        "labels": [
+            "合并转发（每层一个节点）",
+            "逐层引用气泡",
+            "X 风格卡片（一张长图）"
+        ],
+        "hint": "forward：一条合并转发，每层一个节点。card：整条楼渲染成一张 X 风格卡片图，楼层之间用灰色竖线连接。bubble：真正的「引用回复气泡」一层套一层（需后端支持 reply 段）",
+        "default": "forward"
+    },
+    "thread_merge_min_nodes": {
+        "description": "楼层数达到几条就用合并转发",
+        "type": "int",
+        "hint": "只对 forward 交付生效。填 2 表示只要有主贴就用合并转发",
+        "slider": {
+            "min": 2,
+            "max": 10,
+            "step": 1
+        },
+        "default": 3
+    },
+    "thread_merge_media": {
+        "description": "合并转发每层带上图片",
+        "type": "bool",
+        "hint": "开启后每层楼的图片跟着该层一起发出；关闭只给图片链接。视频放不进合并转发，楼层里始终给直链",
+        "default": true
+    },
+    "thread_forward_quote": {
+        "description": "合并转发节点里显示引用块",
+        "type": "bool",
+        "hint": "开启后每个节点在层号标签后带一行「↩ 回复 @上一层：摘要」，只发一条聊天记录也能看清回复关系",
+        "default": true
+    },
+    "search_enabled": {
+        "description": "启用 X 搜索",
+        "type": "bool",
+        "hint": "开启后可用 /xt 搜索 <关键词> 与 LLM 工具 search_x_posts",
+        "default": true
+    },
+    "search_accounts": {
+        "description": "搜索账号列表",
+        "type": "list",
+        "hint": "要检索哪些账号（如 elonmusk、OpenAI）。留空即按关键词自动匹配相关账号（FxTwitter /2/typeahead），无需手动配置",
+        "default": []
+    },
+    "search_account_limit": {
+        "description": "单次搜索最多查询几个账号",
+        "type": "int",
+        "hint": "自动匹配与配置的账号列表共用这一个上限，数值越大越慢，建议 3-5",
+        "slider": {
+            "min": 1,
+            "max": 10,
+            "step": 1
+        },
+        "default": 5
+    },
+    "search_count": {
+        "description": "单次搜索最多返回条数",
+        "type": "int",
+        "hint": "默认 3 条，最多 5 条（超出会被夹到 5）",
+        "slider": {
+            "min": 1,
+            "max": 5,
+            "step": 1
+        },
+        "default": 3
+    },
+    "search_delivery": {
+        "description": "搜索结果的发送方式",
+        "type": "string",
+        "options": [
+            "forward",
+            "text",
+            "image"
+        ],
+        "labels": [
+            "合并转发（每条一个节点）",
+            "一条纯文本",
+            "X 风格卡片图片"
+        ],
+        "hint": "forward：一条合并转发，点开是气泡列表（仅 aiocqhttp 支持，其它平台自动回退纯文本）。image：渲染成 X 风格卡片图（失败自动回退）",
+        "default": "forward"
+    },
+    "search_translate": {
+        "description": "搜索结果补译文",
+        "type": "bool",
+        "hint": "开启后逐条补译文：先调 FxTwitter 单推文接口拿免费译文（时间线接口本身不返回译文），拿不到再按「允许回退大模型翻译」决定。默认关闭",
+        "default": false
+    },
+    "search_translate_concurrency": {
+        "description": "搜索补译文的并发上限",
+        "type": "int",
+        "hint": "同时请求多少条结果补译文，越大越快但越容易触发限速，建议 2-4",
+        "slider": {
+            "min": 1,
+            "max": 10,
+            "step": 1
+        },
+        "default": 3
+    },
+    "search_max_age_hours": {
+        "description": "只搜索最近多少小时内的推文",
+        "type": "int",
+        "hint": "0 表示不限制时间",
+        "slider": {
+            "min": 0,
+            "max": 168,
+            "step": 1
+        },
+        "default": 0
+    },
+    "search_with_replies": {
+        "description": "搜索时包含回复",
+        "type": "bool",
+        "hint": "关闭后只保留账号主动发布的推文，过滤掉以 @ 开头的回复",
+        "default": true
+    },
+    "search_include_media": {
+        "description": "搜索结果附带媒体链接",
+        "type": "bool",
+        "hint": "开启后结果里带上图片 / 视频直链（不下载）",
+        "default": true
+    },
+    "search_required_keywords": {
+        "description": "搜索白名单关键词",
+        "type": "list",
+        "hint": "留空表示不限制；填了以后只有命中这些关键词之一的推文才会返回",
+        "default": []
+    },
+    "profile_enabled": {
+        "description": "解析 X 个人主页链接",
+        "type": "bool",
+        "hint": "开启后 https://x.com/某人 会被解析成账号资料（昵称、简介、粉丝数、加入时间、最近推文）",
+        "default": true
+    },
+    "profile_delivery": {
+        "description": "主页的发送方式",
+        "type": "string",
+        "options": [
+            "card",
+            "text"
+        ],
+        "labels": [
+            "X 风格主页卡片（默认）",
+            "纯文字资料卡"
+        ],
+        "hint": "card：渲染成一张 X 风格主页卡片（横幅 / 大头像 / 简介 / 位置网站加入时间 / 关注数 / 最近推文），配色跟随上面的「卡片主题」。text：旧的纯文字资料卡 + 头像图 + 推文清单",
+        "default": "card"
+    },
+    "profile_post_count": {
+        "description": "主页附带最近推文条数",
+        "type": "int",
+        "hint": "设为 0 则只发账号资料",
+        "slider": {
+            "min": 0,
+            "max": 10,
+            "step": 1
+        },
+        "default": 3
+    },
+    "blocked_keywords": {
+        "description": "黑名单关键词",
+        "type": "list",
+        "hint": "解析与搜索共用这一份：命中即跳过解析、也不出现在搜索结果里（大小写无关）。默认屏蔽色情、赌博、广告拉群类内容，可按需增删",
+        "default": [
+            "nsfw",
+            "porn",
+            "porno",
+            "xxx",
+            "r18",
+            "onlyfans",
+            "18+",
+            "约炮",
+            "色情",
+            "裸聊",
+            "福利姬",
+            "博彩",
+            "赌博",
+            "赌场",
+            "六合彩",
+            "加微信",
+            "加群",
+            "扫码进群",
+            "私聊我",
+            "优惠券",
+            "返利",
+            "刷单",
+            "兼职日结",
+            "代理招商"
+        ]
+    },
+    "blocked_authors": {
+        "description": "黑名单作者",
+        "type": "list",
+        "hint": "这些账号的推文不再自动解析，填 @用户名 或直接填用户名均可，一行一个",
+        "default": []
+    },
+    "emoji_reply": {
+        "description": "解析成功后贴表情",
+        "type": "bool",
+        "hint": "成功解析后给你的那条消息加一个表情回应（QQ 通过 OneBot 扩展接口实现；后端不支持时自动跳过）",
+        "default": true
+    },
+    "emoji_id": {
+        "description": "表情 ID",
+        "type": "text",
+        "hint": "默认 128077（👍，6 位 QQ 表情 ID，适用于 Lagrange）。NapCat / go-cqhttp 用 3 位 ID 可填 144；失败时会自动换另一种编码重试",
+        "default": "128077"
+    },
+    "show_stats_footer": {
+        "description": "在结果末尾显示互动数据",
+        "type": "bool",
+        "hint": "显示点赞、转发、回复、浏览量（卡片模式下控制卡片底部互动栏）",
+        "default": true
+    },
+    "send_error_hint": {
+        "description": "解析失败时在群内提示",
+        "type": "bool",
+        "hint": "关闭后解析失败只记录日志，不在群内发送提示",
+        "default": true
+    },
+    "cooldown_seconds": {
+        "description": "同群同链接冷却时间（秒）",
+        "type": "int",
+        "hint": "防止短时间内重复解析同一条链接刷屏，0 = 不限制",
+        "slider": {
+            "min": 0,
+            "max": 120,
+            "step": 5
+        },
+        "default": 10
+    },
+    "request_timeout": {
+        "description": "网络请求超时（秒）",
+        "type": "int",
+        "hint": "解析接口与媒体下载的超时时间",
+        "slider": {
+            "min": 5,
+            "max": 120,
+            "step": 5
+        },
+        "default": 20
+    },
+    "cache_dir": {
+        "description": "缓存目录",
+        "type": "text",
+        "hint": "留空即用 AstrBot 规范位置 data/plugin_data/astrbot_plugin_x_tweet/cache",
+        "default": ""
+    },
+    "cache_max_files": {
+        "description": "媒体缓存文件数上限",
+        "type": "int",
+        "hint": "超出上限时按最久未使用顺序清理，0 = 不清理",
+        "slider": {
+            "min": 0,
+            "max": 2000,
+            "step": 50
+        },
+        "default": 300
+    },
+    "cache_cleanup_interval": {
+        "description": "定时清理缓存间隔（小时）",
+        "type": "int",
+        "hint": "按该间隔在后台清理媒体缓存与超过 7 天的解析结果。0 = 不开启定时清理（启动时仍清理一次）",
+        "slider": {
+            "min": 0,
+            "max": 168,
+            "step": 1
+        },
+        "default": 0
+    }
+}
