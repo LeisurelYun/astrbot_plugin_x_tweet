@@ -2,6 +2,17 @@
 
 本项目遵循[语义化版本](https://semver.org/lang/zh-CN/)，格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)。
 
+## [v1.14.0] - 2026-10-13
+
+### 维护
+
+- 遵循 AstrBot 插件商店审查意见：移除 Python 内置日志模块的残留（`x_tweet_core.py`
+  里未使用的导入、`main.py` 末尾取日志器的死语句）。日志统一走
+  `from astrbot.api import logger`，其余不变。
+- 在 `cache_dir` 的读取处与配置项说明里补充注释：默认缓存到 AstrBot 规范的
+  `data/plugin_data` 下；开放自定义路径是考虑到部分用户磁盘空间不足，
+  属用户显式配置，不在本版改变该行为。
+
 ## [v1.13.1] - 2026-10-12
 
 ### 修复
@@ -25,17 +36,6 @@
 
 - 删除未被调用的 `XTweetParser.ping()` 与其专用常量 `FXTWITTER_PING_API`。
 - README 里的配置项数量同步为 57 项（`profile_delivery` 加入后漏改）。
-
-## [v1.14.0] - 2026-10-13
-
-### 维护
-
-- 遵循 AstrBot 插件商店审查意见：移除 Python 内置日志模块的残留（`x_tweet_core.py`
-  里未使用的导入、`main.py` 末尾取日志器的死语句）。日志统一走
-  `from astrbot.api import logger`，其余不变。
-- 在 `cache_dir` 的读取处与配置项说明里补充注释：默认缓存到 AstrBot 规范的
-  `data/plugin_data` 下；开放自定义路径是考虑到部分用户磁盘空间不足，
-  属用户显式配置，不在本版改变该行为。
 
 ## [v1.13.0] - 2026-10-12
 
