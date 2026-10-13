@@ -1,0 +1,14 @@
+{
+    "//": "Pylance / Pyright 配置，仅影响编辑器静态分析，与插件运行无关。",
+    "//1": "四个子模块之间用「星号导入 + 动态 __all__」共享命名空间，静态分析无法推断出跨模块的名字（如 DEFAULT_*、logger、Star），会误报大量「未绑定」；这里忽略这几类诊断。",
+    "//2": "若想连「无法解析导入 astrbot / httpx / bs4」也一起消失，推荐把编辑器解释器切到 AstrBot 自带的 Python；或把 AstrBot 的 backend/app 与 backend/python/Lib/site-packages 两个目录填进下面的 extraPaths。",
+    "extraPaths": [],
+    "pythonVersion": "3.12",
+    "reportMissingImports": "none",
+    "reportMissingModuleSource": "none",
+    "reportUnboundVariable": "none",
+    "reportUndefinedVariable": "none",
+    "reportAttributeAccessIssue": "none",
+    "reportGeneralTypeIssues": "none",
+    "reportUnsupportedDunderAll": "none"
+}

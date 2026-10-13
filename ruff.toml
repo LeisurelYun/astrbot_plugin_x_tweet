@@ -1,0 +1,24 @@
+# Ruff 配置：`ruff check .` / `ruff format .` 在插件目录下直接生效。
+#
+# 本机（AstrBot 内置 Python 3.12）的 pip 索引里没有 ruff，所以这份配置目前只作为
+# 约定与将来 CI 的入口；行宽与语法由离线回归测试与 py_compile 兜住。
+
+line-length = 120
+target-version = "py310"
+extend-exclude = ["__pycache__", "*.bak", "*.pyc"]
+
+[lint]
+# 只启用能抓真问题的核心规则（语法错误、未定义名、未使用导入/变量、可疑写法），
+# 不启用 I/UP/SIM 等纯风格规则，避免对既有 4900 行代码产生大面积无意义改写。
+select = ["F", "E4", "E7", "E9", "W"]
+ignore = [
+    "E402", # 允许「先 sys.path 处理再 import」的双模式导入写法
+]
+
+[lint.per-file-ignores]
+"main.py" = ["F401"] # 子模块通过 import * 注入的名字在 main.py 里看不到使用点
+
+[format]
+quote-style = "double"
+indent-style = "space"
+line-ending = "lf"

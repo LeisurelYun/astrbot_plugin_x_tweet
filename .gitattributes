@@ -1,0 +1,12 @@
+# 统一换行符为 LF：Windows 协作者拉下来的文件不会被 git 自动转成 CRLF，
+# 也就不会出现「整个文件都改了」的假 diff。
+* text=auto eol=lf
+
+# 二进制资源不做任何换行转换
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.webp binary
+*.ico binary
+*.pdf binary
