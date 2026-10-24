@@ -2,6 +2,30 @@
 
 本项目遵循[语义化版本](https://semver.org/lang/zh-CN/)，格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)。
 
+## [v1.14.1] - 2026-10-25
+
+### 修复
+
+- 日志里的「空串报错」：httpx 0.28.1 在 Twitter CDN 直接掐断 TLS 连接时抛出的是
+  消息为空串的 `ConnectError('')`，插件原来把 `{exc}` 直接拼进日志，于是刷出
+  「图片下载失败（）」「FxTwitter 接口请求失败：」这种不带任何信息的残废报错，
+  出了问题也没法判断是连接被断还是别的。新增 `exc_text()` 统一格式化异常
+  （消息为空时回退为异常类型名），所有网络类报错点均已切换，日志现在能看出
+  是 ConnectError 还是 Timeout。
+- 插件重载竞态：原来 `terminate()` 会立刻关闭共享的 HTTP 客户端，事件总线里
+  旧实例残留的在途任务随后发出的请求全部打到已关闭的客户端上，日志里表现为
+  一连串 `Cannot send a request, as the client has been closed.`（重载插件后
+  十来秒内集中出现）。现在 terminate 先置终止标志——在途任务不再发起新请求、
+  媒体下载直接降级为发原链接——再有界等待在途任务收尾，最后才关。
+
+### 变更
+
+- 媒体下载与 FxTwitter 请求新增瞬时网络错误重试：`httpx.NetworkError` /
+  `httpx.ProtocolError`（被掐断的 TLS 连接，即此前空串报错的真身）不再
+  失败就降级——图片 / 视频直链最多重试 2 次（间隔 1s / 2s），FxTwitter 主
+  请求重试 1 次。`TimeoutException` 不重试。
+- 「未配置任何镜像实例」从「每次解析失败都刷一条 WARN」降为 DEBUG。
+
 ## [v1.14.0] - 2026-10-13
 
 ### 维护

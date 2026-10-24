@@ -6,7 +6,7 @@ astrbot_plugin_x_tweet —— 媒体下载层
 以及缓存文件的落盘与清理。依赖 x_tweet_core，不依赖插件主体。
 
 作者：Leisurelyun
-版本：v1.14.0
+版本：v1.14.1
 """
 
 from __future__ import annotations
@@ -53,6 +53,7 @@ class MediaDownloader:
         cookie_file: str = "",
         proxy: str = "",
         cache_max_files: int = 300,
+        abort_check: Optional[Callable[[], bool]] = None,
     ) -> None:
         self.client = client
         self.cache_dir = cache_dir
@@ -65,6 +66,9 @@ class MediaDownloader:
         self.cookie_file = cookie_file.strip()
         self.proxy = proxy.strip()
         self.cache_max_files = max(0, cache_max_files)
+        # 插件卸载 / 重载时返回 True：收到信号后不再发起新请求，
+        # 让在途任务尽快收尾，避免客户端关闭后还去打请求
+        self.abort_check = abort_check
 
         # 正在下载中的文件，避免并发重复下载（用弱引用，锁用完即可被回收，表不会无限增长）
         self._locks: weakref.WeakValueDictionary[str, asyncio.Lock] = (
@@ -238,6 +242,8 @@ class MediaDownloader:
         """
         max_bytes = self.max_video_size * 1024 * 1024
         clean_url = strip_url_query(url)
+        if self._should_abort():
+            return None
         target = self.cache_dir / f"{tweet_id}_video_{stable_digest(clean_url)}.mp4"
 
         # 锁按 URL 而不是 tweet_id：同一条推文可能换过视频源 / 直链与 yt-dlp 走不同 URL，
@@ -321,7 +327,7 @@ class MediaDownloader:
             logger.warning(f"[{PLUGIN_NAME}] yt-dlp 可执行文件不存在：{cmd_prefix}")
             return None
         except Exception as exc:
-            logger.warning(f"[{PLUGIN_NAME}] 调用 yt-dlp 失败: {exc}")
+            logger.warning(f"[{PLUGIN_NAME}] 调用 yt-dlp 失败: {exc_text(exc)}")
             await self._kill_process(process)
             return None
 
@@ -446,7 +452,12 @@ class MediaDownloader:
         explicit_path: Optional[Path] = None,
         variant: str = "",
     ) -> Optional[Path]:
-        """流式下载媒体到本地，带大小上限与并发去重。"""
+        """流式下载媒体到本地，带大小上限、并发去重与瞬时错误重试。
+
+        瞬时网络错误（Twitter CDN 掐断 TLS 连接等）按
+        MEDIA_DOWNLOAD_RETRY_DELAYS 的间隔重试——这类异常的 str() 多为
+        空串（httpx ConnectError('')），不重试就只能降级发原链接。
+        """
         if not url or not url.startswith("http"):
             return None
 
@@ -459,54 +470,48 @@ class MediaDownloader:
                 return target
 
             temp = target.with_name(target.name + ".part")
-            try:
-                async with self.client.stream(
-                    "GET",
-                    url,
-                    headers={"User-Agent": self.user_agent, "Referer": "https://x.com/"},
-                    timeout=self.timeout,
-                    follow_redirects=True,
-                ) as response:
-                    if response.status_code >= 400:
-                        logger.debug(
-                            f"[{PLUGIN_NAME}] {kind}下载失败 HTTP {response.status_code}：{url}"
-                        )
+            attempt = 0
+            while True:
+                if self._should_abort():
+                    logger.debug(
+                        f"[{PLUGIN_NAME}] {kind}下载中止（插件正在卸载 / 重载）：{url}"
+                    )
+                    return None
+                try:
+                    written = await self._download_to_file(temp, url, max_bytes, kind)
+                    if not written:
+                        # HTTP 错误 / 响应头声明超限：内部已按 DEBUG / INFO 记过，
+                        # 这里静默降级为发原链接（与加重试前的行为一致）
                         return None
-
-                    # 先看响应头里的大小声明，尽早放弃超大文件
-                    declared = response.headers.get("content-length")
-                    if declared and declared.isdigit() and int(declared) > max_bytes:
+                    break
+                except _MediaTooLargeError:
+                    self._safe_unlink(temp)
+                    logger.info(
+                        f"[{PLUGIN_NAME}] {kind}超过大小上限（{max_bytes // 1024 // 1024}MB），"
+                        f"降级为发送原链接：{url}"
+                    )
+                    return None
+                except httpx.TimeoutException:
+                    self._safe_unlink(temp)
+                    logger.warning(f"[{PLUGIN_NAME}] {kind}下载超时：{url}")
+                    return None
+                except Exception as exc:
+                    self._safe_unlink(temp)
+                    if (
+                        is_transient_network_error(exc)
+                        and attempt < len(MEDIA_DOWNLOAD_RETRY_DELAYS)
+                    ):
+                        delay = MEDIA_DOWNLOAD_RETRY_DELAYS[attempt]
+                        attempt += 1
                         logger.info(
-                            f"[{PLUGIN_NAME}] {kind}体积 {int(declared) / 1024 / 1024:.1f}MB "
-                            f"超过上限，降级为发送原链接：{url}"
+                            f"[{PLUGIN_NAME}] {kind}下载遇到瞬时网络错误"
+                            f"（{exc_text(exc)}），{delay:.0f} 秒后重试"
+                            f"（第 {attempt} 次）：{url}"
                         )
-                        return None
-
-                    downloaded = 0
-                    with open(temp, "wb") as fp:
-                        async for chunk in response.aiter_bytes(64 * 1024):
-                            if not chunk:
-                                continue
-                            downloaded += len(chunk)
-                            if downloaded > max_bytes:
-                                raise _MediaTooLargeError
-                            # 写盘放到线程里，避免大文件下载（最长 180s）阻塞事件循环
-                            await asyncio.to_thread(fp.write, chunk)
-            except _MediaTooLargeError:
-                self._safe_unlink(temp)
-                logger.info(
-                    f"[{PLUGIN_NAME}] {kind}超过大小上限（{max_bytes // 1024 // 1024}MB），"
-                    f"降级为发送原链接：{url}"
-                )
-                return None
-            except httpx.TimeoutException:
-                self._safe_unlink(temp)
-                logger.warning(f"[{PLUGIN_NAME}] {kind}下载超时：{url}")
-                return None
-            except Exception as exc:
-                self._safe_unlink(temp)
-                logger.warning(f"[{PLUGIN_NAME}] {kind}下载失败（{exc}）：{url}")
-                return None
+                        await asyncio.sleep(delay)
+                        continue
+                    logger.warning(f"[{PLUGIN_NAME}] {kind}下载失败（{exc_text(exc)}）：{url}")
+                    return None
 
             if not temp.exists() or temp.stat().st_size == 0:
                 self._safe_unlink(temp)
@@ -517,13 +522,66 @@ class MediaDownloader:
                 os.replace(temp, target)
             except Exception as exc:
                 self._safe_unlink(temp)
-                logger.warning(f"[{PLUGIN_NAME}] {kind}写入缓存失败（{exc}）：{url}")
+                logger.warning(f"[{PLUGIN_NAME}] {kind}写入缓存失败（{exc_text(exc)}）：{url}")
                 return None
 
             # 触达更新时间，配合 LRU 清理
             os.utime(target, None)
             self._schedule_cleanup()
             return target
+
+    async def _download_to_file(
+        self, temp: Path, url: str, max_bytes: int, kind: str
+    ) -> bool:
+        """把 url 流式写入 temp（单次尝试，不做重试）。
+
+        返回 False 表示「放弃下载但不该报警」——HTTP 状态 >= 400（内部按
+        DEBUG 记录）或响应头声明的体积超限（内部按 INFO 记录）。体积超限
+        抛 _MediaTooLargeError；其余网络异常原样向上抛，由调用方按异常
+        类型决定重试还是记 WARN。
+        """
+        async with self.client.stream(
+            "GET",
+            url,
+            headers={"User-Agent": self.user_agent, "Referer": "https://x.com/"},
+            timeout=self.timeout,
+            follow_redirects=True,
+        ) as response:
+            if response.status_code >= 400:
+                logger.debug(
+                    f"[{PLUGIN_NAME}] {kind}下载失败 HTTP {response.status_code}：{url}"
+                )
+                return False
+
+            # 先看响应头里的大小声明，尽早放弃超大文件
+            declared = response.headers.get("content-length")
+            if declared and declared.isdigit() and int(declared) > max_bytes:
+                logger.info(
+                    f"[{PLUGIN_NAME}] {kind}体积 {int(declared) / 1024 / 1024:.1f}MB "
+                    f"超过上限，降级为发送原链接：{url}"
+                )
+                return False
+
+            downloaded = 0
+            with open(temp, "wb") as fp:
+                async for chunk in response.aiter_bytes(64 * 1024):
+                    if not chunk:
+                        continue
+                    downloaded += len(chunk)
+                    if downloaded > max_bytes:
+                        raise _MediaTooLargeError
+                    # 写盘放到线程里，避免大文件下载（最长 180s）阻塞事件循环
+                    await asyncio.to_thread(fp.write, chunk)
+        return True
+
+    def _should_abort(self) -> bool:
+        """插件是否正在卸载 / 重载（abort_check 由插件注入）。"""
+        if self.abort_check is None:
+            return False
+        try:
+            return bool(self.abort_check())
+        except Exception:  # pragma: no cover - 探测函数本身出错时按「不中止」处理
+            return False
 
     @staticmethod
     def _safe_unlink(path: Path) -> None:

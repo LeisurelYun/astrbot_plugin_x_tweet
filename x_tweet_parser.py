@@ -7,7 +7,7 @@ astrbot_plugin_x_tweet —— 解析层
 依赖 x_tweet_core 中的常量与数据结构，不依赖插件主体，可单独实例化测试。
 
 作者：Leisurelyun
-版本：v1.14.0
+版本：v1.14.1
 """
 
 from __future__ import annotations
@@ -57,10 +57,14 @@ class XTweetParser:
         enable_mirror_sources: Optional[bool] = None,
         mirror_fx_instances: Optional[list[str]] = None,
         source_order: Optional[list[str]] = None,
+        abort_check: Optional[Callable[[], bool]] = None,
     ) -> None:
         self.client = client
         self.timeout = timeout
         self.user_agent = user_agent
+        # 插件卸载 / 重载时返回 True：收到信号后不再发起新请求，
+        # 让在途任务尽快收尾，避免客户端关闭后还去打请求
+        self.abort_check = abort_check
         # FxTwitter 自带译文缺失时的重试次数（插件会把面板配置传进来；
         # 单独使用本类时按默认值走）
         self.translate_retry: int = (
@@ -122,6 +126,15 @@ class XTweetParser:
             "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
         }
 
+    def _should_abort(self) -> bool:
+        """插件是否正在卸载 / 重载（abort_check 由插件注入）。"""
+        if self.abort_check is None:
+            return False
+        try:
+            return bool(self.abort_check())
+        except Exception:  # pragma: no cover - 探测函数本身出错时按「不中止」处理
+            return False
+
     async def close(self) -> None:
         """关闭底层 HTTP 客户端。"""
         try:
@@ -153,6 +166,11 @@ class XTweetParser:
         last = TweetData(tweet_id=tweet_id, error="所有解析源均未取到推文")
         errors: list[str] = []
         for key, fetcher in self._source_fetchers():
+            if self._should_abort():
+                logger.debug(
+                    f"[{PLUGIN_NAME}] 插件正在卸载 / 重载，中止解析推文 {tweet_id}"
+                )
+                break
             if key == "fxtwitter" and translate_lang:
                 candidate = await self.fetch_via_fxtwitter(
                     tweet_id, translate_lang=translate_lang
@@ -165,6 +183,14 @@ class XTweetParser:
             label = PARSE_SOURCE_CHOICES.get(key, key)
             if candidate.error:
                 errors.append(f"{label}：{candidate.error}")
+            if candidate.error == MIRROR_NOT_CONFIGURED_ERROR:
+                # 「未配置任何镜像实例」是静态配置事实，启动日志里已经提示过，
+                # 每来一条解析失败就再 WARN 一遍只会稀释真正的错误
+                logger.debug(
+                    f"[{PLUGIN_NAME}] 解析源「{label}」未启用（未配置镜像实例），"
+                    f"跳过推文 {tweet_id}"
+                )
+                continue
             logger.warning(
                 f"[{PLUGIN_NAME}] 解析源「{label}」未取到推文 {tweet_id}：{candidate.error}"
             )
@@ -298,7 +324,7 @@ class XTweetParser:
         try:
             text = await translator.translate(data.text, target, data.lang)
         except Exception as exc:
-            logger.warning(f"[{PLUGIN_NAME}] 大模型翻译失败：{exc}")
+            logger.warning(f"[{PLUGIN_NAME}] 大模型翻译失败：{exc_text(exc)}")
             return
         if text:
             if text.strip() == (data.text or "").strip():
@@ -363,7 +389,7 @@ class XTweetParser:
         ② vx 系（vxtwitter 等，顶层直接是 user_screen_name / text / date_epoch 等）。
         请求统一带 Referer: https://x.com/（vx 系镜像不带会返回 403）。
         """
-        empty = TweetData(tweet_id=tweet_id, error="未配置任何镜像实例")
+        empty = TweetData(tweet_id=tweet_id, error=MIRROR_NOT_CONFIGURED_ERROR)
         instances = list(self.mirror_fx_instances)
         if not self.enable_mirror_sources or not instances:
             return empty
@@ -395,10 +421,10 @@ class XTweetParser:
             data.error = "镜像请求超时"
             return data
         except httpx.HTTPError as exc:
-            data.error = f"镜像请求失败：{exc}"
+            data.error = f"镜像请求失败：{exc_text(exc)}"
             return data
         except Exception as exc:  # pragma: no cover
-            data.error = f"镜像请求未知错误：{exc}"
+            data.error = f"镜像请求未知错误：{exc_text(exc)}"
             return data
 
         if response.status_code == 404:
@@ -554,10 +580,10 @@ class XTweetParser:
             data.error = "Syndication 接口请求超时"
             return data
         except httpx.HTTPError as exc:
-            data.error = f"Syndication 接口请求失败：{exc}"
+            data.error = f"Syndication 接口请求失败：{exc_text(exc)}"
             return data
         except Exception as exc:  # pragma: no cover
-            data.error = f"Syndication 接口未知错误：{exc}"
+            data.error = f"Syndication 接口未知错误：{exc_text(exc)}"
             return data
         if response.status_code >= 400:
             data.error = f"Syndication 接口返回 HTTP {response.status_code}"
@@ -755,7 +781,7 @@ class XTweetParser:
         try:
             response = await self.client.get(api_url, headers=self.headers())
         except Exception as exc:
-            data.error = f"请求主页失败：{type(exc).__name__}: {exc}"
+            data.error = f"请求主页失败：{exc_text(exc)}"
             return data
 
         if response.status_code == 404:
@@ -842,10 +868,30 @@ class XTweetParser:
             data.error = "FxTwitter 接口请求超时"
             return data, {}
         except httpx.HTTPError as exc:
-            data.error = f"FxTwitter 接口请求失败：{exc}"
-            return data, {}
+            # Twitter / FxTwitter 侧偶尔直接掐断 TLS 连接，httpx 0.28.1 抛出的
+            # ConnectError 消息是空串。这类错误换条新连接重试一次通常立刻就好，
+            # 不重试就只能让整条解析降级到下一个源。
+            if is_transient_network_error(exc) and not self._should_abort():
+                logger.info(
+                    f"[{PLUGIN_NAME}] FxTwitter 请求遇到瞬时网络错误"
+                    f"（{exc_text(exc)}），{FETCH_RETRY_DELAY_SECONDS:.1f} 秒后重试一次：{api_url}"
+                )
+                await asyncio.sleep(FETCH_RETRY_DELAY_SECONDS)
+                try:
+                    response = await self.client.get(
+                        api_url, headers=self.headers(), timeout=self.timeout
+                    )
+                except httpx.TimeoutException:
+                    data.error = "FxTwitter 接口请求超时（重试后）"
+                    return data, {}
+                except Exception as retry_exc:  # 重试仍失败就按普通失败处理
+                    data.error = f"FxTwitter 接口请求失败：{exc_text(retry_exc)}"
+                    return data, {}
+            else:
+                data.error = f"FxTwitter 接口请求失败：{exc_text(exc)}"
+                return data, {}
         except Exception as exc:  # pragma: no cover
-            data.error = f"FxTwitter 接口未知错误：{exc}"
+            data.error = f"FxTwitter 接口未知错误：{exc_text(exc)}"
             return data, {}
 
         # FxTwitter 对无 UA 请求返回 401，私有推文同样返回 401
@@ -1059,7 +1105,7 @@ class XTweetParser:
             data.error = data.error or "Twitter oEmbed 接口请求超时"
             return data
         except Exception as exc:
-            data.error = data.error or f"Twitter oEmbed 接口请求失败：{exc}"
+            data.error = data.error or f"Twitter oEmbed 接口请求失败：{exc_text(exc)}"
             return data
 
         if response.status_code >= 400:
@@ -1330,8 +1376,8 @@ class Translator:
             return ""
         except Exception as exc:
             self.failure_count += 1
-            self.last_error = f"{type(exc).__name__}: {exc}"
-            logger.warning(f"[{PLUGIN_NAME}] 大模型翻译失败（{provider_id}）：{exc}")
+            self.last_error = exc_text(exc)
+            logger.warning(f"[{PLUGIN_NAME}] 大模型翻译失败（{provider_id}）：{exc_text(exc)}")
             return ""
 
         result = (getattr(response, "completion_text", "") or "").strip()

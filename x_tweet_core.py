@@ -7,7 +7,7 @@ astrbot_plugin_x_tweet —— 公共基础层
 供 x_tweet_parser / x_tweet_media / main 通过 `from .x_tweet_core import *` 复用。
 
 作者：Leisurelyun
-版本：v1.14.0
+版本：v1.14.1
 """
 
 from __future__ import annotations
@@ -28,7 +28,7 @@ import weakref
 from dataclasses import dataclass, field, asdict
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 
 import httpx
 
@@ -92,6 +92,9 @@ PARSE_SOURCE_CHOICES: dict[str, str] = {
 }
 # vx 系镜像（vxtwitter 等）必须带 Referer 才放行，否则一律 403
 VX_MIRROR_REFERER = "https://x.com/"
+# 「未配置任何镜像实例」的错误文案：主链据此把这条来源的日志降到 debug 级
+# （静态配置事实，没必要每来一条解析失败就刷一次 WARN）
+MIRROR_NOT_CONFIGURED_ERROR = "未配置任何镜像实例"
 # 是否启用 FxTwitter 镜像实例轮询（FxTwitter 主站单点故障时的第二级保障）
 DEFAULT_ENABLE_MIRROR_SOURCES = True
 # 镜像实例列表：FxTwitter 同构或 vx 系 API 的部署（形如 https://api.vxtwitter.com）。
@@ -199,6 +202,17 @@ DEFAULT_SEARCH_COUNT = 3
 SEARCH_COUNT_MAX = 5
 # typeahead 自动匹配结果的内存缓存时长（秒）：防止短时间内重复搜索触发 429 限速
 TYPEAHEAD_CACHE_TTL_SECONDS = 900
+# 媒体下载（图片 / 视频直链）遇到瞬时网络错误时的重试间隔（秒）。
+# Twitter CDN（pbs.twimg.com / video.twimg.com）经常直接掐断 TLS 连接，
+# httpx 0.28.1 抛出的 ConnectError 消息为空串；这类错误换条新连接重试
+# 通常立刻就好，不重试就只能降级为发原链接。
+MEDIA_DOWNLOAD_RETRY_DELAYS: tuple[float, ...] = (1.0, 2.0)
+# FxTwitter 接口遇到瞬时网络错误时的重试间隔（秒）
+FETCH_RETRY_DELAY_SECONDS = 0.5
+# 插件卸载 / 重载时，等待在途解析 / 下载任务收尾的最长时间（秒）。
+# 超时后直接关闭客户端，残留任务会打到一个已关闭的客户端上并各自报错，
+# 因此这个值取「多数在途任务（几张图的下载）能收尾」的量级即可。
+TERMINATE_DRAIN_SECONDS = 5.0
 # 搜索结果的交付方式：forward=合并转发（聊天记录，每条一个节点）；
 # text=一条纯文本；image=渲染成图片卡片（AstrBot 文转图，失败自动回退）
 DEFAULT_SEARCH_DELIVERY = "forward"
@@ -957,6 +971,35 @@ def truncate_text(text: str, limit: int = MAX_TEXT_LEN) -> str:
     if len(text) <= limit:
         return text
     return text[:limit].rstrip() + "……（内容过长已截断）"
+
+
+def exc_text(exc: BaseException) -> str:
+    """把异常格式化为可读文本，保证日志永远带得上定位信息。
+
+    httpx 在「对端直接掐断 TLS 连接」时抛出的是**消息为空串**的异常
+    （实测 httpx 0.28.1：`ConnectError('')`，`str(exc) == ''`），
+    直接 f"{exc}" 会打出「图片下载失败（）」这种没有任何信息的残废报错。
+    这里统一带上异常类型名；消息为空时只保留类型名。
+    """
+    try:
+        message = str(exc).strip()
+    except Exception:  # pragma: no cover - 极端情况：__str__ 自己抛异常
+        message = ""
+    if message:
+        return f"{type(exc).__name__}: {message}"
+    return type(exc).__name__
+
+
+def is_transient_network_error(exc: BaseException) -> bool:
+    """判断是否为「值得立即重试」的瞬时网络错误。
+
+    覆盖 httpx.NetworkError（ConnectError / ReadError / WriteError /
+    CloseError——Twitter CDN 掐断 TLS 连接时抛出的就是消息为空的
+    ConnectError）与 httpx.ProtocolError（RemoteProtocolError，
+    服务端没发完响应就断开）。刻意不含 TimeoutException：
+    已经等满超时了，重试大概率还是超时，白翻倍等待时间。
+    """
+    return isinstance(exc, (httpx.NetworkError, httpx.ProtocolError))
 
 
 def _to_int(value: Any) -> Optional[int]:

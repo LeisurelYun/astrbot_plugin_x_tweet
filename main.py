@@ -29,12 +29,13 @@ astrbot_plugin_x_tweet —— AstrBot 插件（入口）
     * 译文优先取 FxTwitter 自带的 ?lang= 结果（免费、无密钥），拿不到才调用大模型。
 
 作者：Leisurelyun
-版本：v1.14.0
+版本：v1.14.1
 """
 
 from __future__ import annotations
 
 import base64
+import contextlib
 import os
 import sys
 
@@ -363,6 +364,7 @@ class XTweetPlugin(Star):
             enable_mirror_sources=self.enable_mirror_sources,
             mirror_fx_instances=self.mirror_fx_instances,
             source_order=self.parse_source_order,
+            abort_check=self._should_abort,
         )
         self.downloader = MediaDownloader(
             client=self.client,
@@ -375,6 +377,7 @@ class XTweetPlugin(Star):
             cookie_file=self.cookie_file,
             proxy=self.proxy,
             cache_max_files=self._cfg_int("cache_max_files", 300),
+            abort_check=self._should_abort,
         )
         self.translator = Translator(
             context=context,
@@ -414,6 +417,14 @@ class XTweetPlugin(Star):
 
         self.run_count = 0
         self.last_error = ""
+
+        # ------------------------- 在途任务跟踪 ------------------------- #
+        # 插件重载 / 卸载时，terminate() 会先置 _terminating 再等待在途的
+        # 解析 / 下载任务收尾，然后才关闭共享的 HTTP 客户端。少了这一步，
+        # 旧实例残留的任务会打到已关闭的客户端上，日志里表现为一连串
+        # "Cannot send a request, as the client has been closed."。
+        self._active_ops: int = 0
+        self._terminating: bool = False
 
     # ------------------------------------------------------------------ #
     # 配置读取辅助
@@ -636,9 +647,9 @@ class XTweetPlugin(Star):
         except httpx.TimeoutException:
             return [], "请求超时"
         except httpx.HTTPError as exc:
-            return [], f"网络异常：{exc}"
+            return [], f"网络异常：{exc_text(exc)}"
         except Exception as exc:  # 兜底：任何异常都降级为「没有数据 + 原因」
-            return [], f"网络异常：{exc}"
+            return [], f"网络异常：{exc_text(exc)}"
         if response.status_code == 204:
             return [], ""  # 没有比 since 更新的推文
         if response.status_code != 200:
@@ -686,9 +697,9 @@ class XTweetPlugin(Star):
         except httpx.TimeoutException:
             return [], "请求超时"
         except httpx.HTTPError as exc:
-            return [], f"网络异常：{exc}"
+            return [], f"网络异常：{exc_text(exc)}"
         except Exception as exc:  # 兜底：任何异常都降级为「没有数据 + 原因」
-            return [], f"网络异常：{exc}"
+            return [], f"网络异常：{exc_text(exc)}"
         if response.status_code != 200:
             return [], f"HTTP {response.status_code}"
 
@@ -1097,6 +1108,19 @@ class XTweetPlugin(Star):
     # 生命周期
     # ------------------------------------------------------------------ #
 
+    def _should_abort(self) -> bool:
+        """插件是否正在卸载 / 重载（下发给 parser / downloader 的中止信号）。"""
+        return self._terminating
+
+    @contextlib.asynccontextmanager
+    async def _tracked_op(self):
+        """跟踪一个在途的 handler：terminate() 会等这些任务收尾后再关客户端。"""
+        self._active_ops += 1
+        try:
+            yield
+        finally:
+            self._active_ops -= 1
+
     def _search_account_text(self) -> str:
         """/xt 状态 里的账号来源说明。"""
         if self.search_accounts:
@@ -1145,6 +1169,21 @@ class XTweetPlugin(Star):
 
     async def terminate(self) -> None:
         """插件卸载/重载时调用，释放网络资源。"""
+        # 1) 先打终止标志：parser / downloader 收到信号后不再发起新请求，
+        #    在途任务会在下一个请求边界主动收尾（媒体下载直接降级发链接）
+        self._terminating = True
+        # 2) 有界等待在途任务收尾。不等待就直接关客户端的话，旧实例残留的
+        #    任务会打到已关闭的客户端上，刷出一串
+        #    "Cannot send a request, as the client has been closed."
+        waited = 0.0
+        while self._active_ops > 0 and waited < TERMINATE_DRAIN_SECONDS:
+            await asyncio.sleep(0.1)
+            waited += 0.1
+        if self._active_ops > 0:
+            logger.debug(
+                f"[{PLUGIN_NAME}] 卸载时仍有 {self._active_ops} 个任务在途，直接关闭客户端"
+            )
+        # 3) 停掉定时清理，再关闭共享的 HTTP 客户端
         if self._cleanup_task is not None:
             self._cleanup_task.cancel()
             try:
@@ -1582,6 +1621,13 @@ class XTweetPlugin(Star):
         引用 / 回复贴的主贴会被二次解析后**单独成一条消息先发**（见 thread_split 配置），
         这样主贴的译文与媒体都能与当前推文区分开。
         """
+        # 包一层在途跟踪：插件重载时 terminate() 会等在途任务收尾后再关 HTTP 客户端
+        async with self._tracked_op():
+            async for item in self._on_group_message_impl(event):
+                yield item
+
+    async def _on_group_message_impl(self, event: AstrMessageEvent):
+        """on_group_message 的实现体（独立出来只为包 _tracked_op，勿单独调用）。"""
         if not self.enabled:
             return
 
@@ -1666,7 +1712,7 @@ class XTweetPlugin(Star):
             # 自动解析完成后终止事件传播，避免机器人再对链接发起一次 LLM 请求
             event.stop_event()
         except Exception as exc:
-            self.last_error = f"{type(exc).__name__}: {exc}"
+            self.last_error = exc_text(exc)
             logger.error(f"[{PLUGIN_NAME}] 自动解析消息时出错: {exc}", exc_info=True)
             if self.send_error_hint:
                 yield event.plain_result("推文解析出错了，请稍后再试。")
@@ -1724,7 +1770,7 @@ class XTweetPlugin(Star):
             return True
         except Exception as exc:
             logger.warning(
-                f"[{PLUGIN_NAME}] 分条发送失败（{exc}），改为合并成一条消息发送"
+                f"[{PLUGIN_NAME}] 分条发送失败（{exc_text(exc)}），改为合并成一条消息发送"
             )
             return False
 
@@ -2460,7 +2506,7 @@ class XTweetPlugin(Star):
                     )
                 except Exception as exc:
                     logger.warning(
-                        f"[{PLUGIN_NAME}] 视频下载异常（{exc}），降级为发送链接"
+                        f"[{PLUGIN_NAME}] 视频下载异常（{exc_text(exc)}），降级为发送链接"
                     )
                     local_video = None
                 self._mark_media_sent(session_id, data.tweet_id)
@@ -2562,7 +2608,7 @@ class XTweetPlugin(Star):
                     last_data.tweet_id, last_data.videos[0]
                 )
             except Exception as exc:
-                logger.warning(f"[{PLUGIN_NAME}] 视频下载异常（{exc}），降级为发送链接")
+                logger.warning(f"[{PLUGIN_NAME}] 视频下载异常（{exc_text(exc)}），降级为发送链接")
                 local_video = None
             self._mark_media_sent(session_id, last_id)
         if local_video is None:
@@ -2632,7 +2678,7 @@ class XTweetPlugin(Star):
                     )
                 except Exception as exc:
                     logger.warning(
-                        f"[{PLUGIN_NAME}] 视频下载异常（{exc}），降级为发送链接"
+                        f"[{PLUGIN_NAME}] 视频下载异常（{exc_text(exc)}），降级为发送链接"
                     )
                     local_video = None
                 self._mark_media_sent(session_id, tid)
@@ -2803,7 +2849,7 @@ class XTweetPlugin(Star):
         try:
             result = await action(api, **payload)
         except Exception as exc:
-            logger.warning(f"[{PLUGIN_NAME}] 引用回复气泡发送失败（{api}）：{exc}")
+            logger.warning(f"[{PLUGIN_NAME}] 引用回复气泡发送失败（{api}）：{exc_text(exc)}")
             return False, ""
 
         message_id = ""
@@ -2970,7 +3016,7 @@ class XTweetPlugin(Star):
                         )
                     except Exception as exc:
                         logger.warning(
-                            f"[{PLUGIN_NAME}] 视频下载异常（{exc}），降级为发送链接"
+                            f"[{PLUGIN_NAME}] 视频下载异常（{exc_text(exc)}），降级为发送链接"
                         )
                         local_video = None
                     self._mark_media_sent(session_id, tweet_id)
@@ -3001,7 +3047,7 @@ class XTweetPlugin(Star):
 
             return parts
         except Exception as exc:
-            self.last_error = f"{type(exc).__name__}: {exc}"
+            self.last_error = exc_text(exc)
             logger.error(
                 f"[{PLUGIN_NAME}] 处理推文 {tweet_id} 时出现异常: {exc}",
                 exc_info=True,
@@ -3089,7 +3135,7 @@ class XTweetPlugin(Star):
         try:
             profile = await self._fetch_profile_cached(handle)
         except Exception as exc:
-            logger.warning(f"[{PLUGIN_NAME}] 解析主页 {handle} 异常：{exc}")
+            logger.warning(f"[{PLUGIN_NAME}] 解析主页 {handle} 异常：{exc_text(exc)}")
             if not self.send_error_hint:
                 return []
             return [[Comp.Plain(f"⚠️ 主页解析出错了：{truncate_text(str(exc), 120)}")]]
@@ -3213,6 +3259,20 @@ class XTweetPlugin(Star):
             accounts(string): 要检索的 X 账号，多个用逗号分隔（如 elonmusk,OpenAI）；留空表示使用插件配置里的「搜索账号列表」，配置为空时按关键词自动匹配相关账号
             limit(int): 最多返回多少条结果，0 表示使用插件配置的默认值
         """
+        # 包一层在途跟踪：插件重载时 terminate() 会等在途任务收尾后再关 HTTP 客户端
+        async with self._tracked_op():
+            return await self._search_x_posts_tool_impl(
+                event, keyword=keyword, accounts=accounts, limit=limit
+            )
+
+    async def _search_x_posts_tool_impl(
+        self,
+        event: AstrMessageEvent,
+        keyword: str = "",
+        accounts: str = "",
+        limit: int = 0,
+    ) -> str:
+        """search_x_posts_tool 的实现体（独立出来只为包 _tracked_op，勿单独调用）。"""
         self._apply_session_lang(event)
         try:
             if not self.search_enabled:
@@ -3242,10 +3302,10 @@ class XTweetPlugin(Star):
                 )
             return json.dumps(payload, ensure_ascii=False)
         except Exception as exc:
-            self.last_error = f"{type(exc).__name__}: {exc}"
+            self.last_error = exc_text(exc)
             logger.error(f"[{PLUGIN_NAME}] 搜索工具执行失败: {exc}", exc_info=True)
             return json.dumps(
-                {"success": False, "type": "x_search", "error": f"工具内部错误：{exc}"},
+                {"success": False, "type": "x_search", "error": f"工具内部错误：{exc_text(exc)}"},
                 ensure_ascii=False,
             )
 
@@ -3325,6 +3385,16 @@ class XTweetPlugin(Star):
         Args:
             tweet_url(string): 推文链接、个人主页链接、@账号名或推文数字 ID；留空表示使用本会话最近解析过的推文
         """
+        # 包一层在途跟踪：插件重载时 terminate() 会等在途任务收尾后再关 HTTP 客户端
+        async with self._tracked_op():
+            return await self._parse_x_tweet_impl(event, tweet_url=tweet_url)
+
+    async def _parse_x_tweet_impl(
+        self,
+        event: AstrMessageEvent,
+        tweet_url: str = "",
+    ) -> str:
+        """parse_x_tweet 的实现体（独立出来只为包 _tracked_op，勿单独调用）。"""
         try:
             self._apply_session_lang(event)
             tweet_id = normalize_tweet_ref(tweet_url) if tweet_url else None
@@ -3449,10 +3519,10 @@ class XTweetPlugin(Star):
                 )
             return json.dumps(payload, ensure_ascii=False)
         except Exception as exc:
-            self.last_error = f"{type(exc).__name__}: {exc}"
+            self.last_error = exc_text(exc)
             logger.error(f"[{PLUGIN_NAME}] LLM 工具执行失败: {exc}", exc_info=True)
             return json.dumps(
-                {"success": False, "error": f"工具内部错误：{exc}"}, ensure_ascii=False
+                {"success": False, "error": f"工具内部错误：{exc_text(exc)}"}, ensure_ascii=False
             )
 
     # ------------------------------------------------------------------ #
@@ -3462,6 +3532,13 @@ class XTweetPlugin(Star):
     @filter.command("xt")
     async def xt_command(self, event: AstrMessageEvent):
         """查看 X 推文解析插件的状态与缓存情况。用法：/xt [状态|清理|翻译 <语言>|搜索 <关键词>|主页 <账号>]"""
+        # 包一层在途跟踪：插件重载时 terminate() 会等在途任务收尾后再关 HTTP 客户端
+        async with self._tracked_op():
+            async for item in self._xt_command_impl(event):
+                yield item
+
+    async def _xt_command_impl(self, event: AstrMessageEvent):
+        """xt_command 的实现体（独立出来只为包 _tracked_op，勿单独调用）。"""
         self._apply_session_lang(event)
         raw = event.message_str or ""
         parts = raw.split(maxsplit=1)
@@ -3660,7 +3737,7 @@ class XTweetPlugin(Star):
                 min_likes=min_faves,
             )
         except Exception as exc:
-            self.last_error = f"{type(exc).__name__}: {exc}"
+            self.last_error = exc_text(exc)
             logger.error(f"[{PLUGIN_NAME}] /xt 搜索 失败: {exc}", exc_info=True)
             yield event.plain_result("⚠️ 搜索出错了，请稍后再试。")
             return
@@ -3727,7 +3804,7 @@ class XTweetPlugin(Star):
         try:
             messages = await self._collect_profile_messages(event, handle)
         except Exception as exc:
-            self.last_error = f"{type(exc).__name__}: {exc}"
+            self.last_error = exc_text(exc)
             logger.error(f"[{PLUGIN_NAME}] /xt 主页 失败: {exc}", exc_info=True)
             yield event.plain_result("⚠️ 主页解析出错了，请稍后再试。")
             return
